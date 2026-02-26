@@ -1,0 +1,126 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Backend ──────────────────────────────────────────────────
+  fastapi:
+    build: .
+    container_name: ai_course_fastapi
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - redis
+      - qdrant
+    volumes:
+      - ./temp:/app/temp
+      - ./output:/app/output
+    restart: unless-stopped
+
+  # ── Celery Worker: Audio ─────────────────────────────────────────────
+  celery_audio:
+    build: .
+    container_name: ai_course_celery_audio
+    command: celery -A app.workers.celery_app worker -Q audio --loglevel=info --concurrency=2
+    env_file: .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - qdrant
+    volumes:
+      - ./temp:/app/temp
+    restart: unless-stopped
+
+  # ── Celery Worker: Document ──────────────────────────────────────────
+  celery_document:
+    build: .
+    container_name: ai_course_celery_document
+    command: celery -A app.workers.celery_app worker -Q document --loglevel=info --concurrency=1
+    env_file: .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - qdrant
+    volumes:
+      - ./temp:/app/temp
+    restart: unless-stopped
+
+  # ── Celery Worker: Generate ──────────────────────────────────────────
+  celery_generate:
+    build: .
+    container_name: ai_course_celery_generate
+    command: celery -A app.workers.celery_app worker -Q generate --loglevel=info --concurrency=2
+    env_file: .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - redis
+      - qdrant
+    restart: unless-stopped
+
+  # ── Celery Flower (Dashboard) ────────────────────────────────────────
+  flower:
+    build: .
+    container_name: ai_course_flower
+    command: celery -A app.workers.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ai_course_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ── Qdrant ───────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai_course_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"    # gRPC port
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ── Ollama (Llama) ───────────────────────────────────────────────────
+  # Uncomment jika ingin Llama lokal via Ollama
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ai_course_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+volumes:
+  redis_data:
+  qdrant_data:
+  # ollama_data:

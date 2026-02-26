@@ -1,0 +1,18 @@
+{
+  "f364bdb1-f13a-498c-a82e-9a2d532f4ef0": {
+    "task_id": "f364bdb1-f13a-498c-a82e-9a2d532f4ef0",
+    "status": "error",
+    "course_id": "11aq",
+    "filename": "7783.pdf",
+    "error": "Docling tidak tersedia di server ini. Jalankan: pip install docling",
+    "created_at": "2026-02-26 13:33:02"
+  },
+  "7e0302d7-ece4-4937-b839-f462bf8718f0": {
+    "task_id": "7e0302d7-ece4-4937-b839-f462bf8718f0",
+    "status": "error",
+    "course_id": "99k",
+    "filename": "7783.pdf",
+    "error": "[WinError 1114] A dynamic link library (DLL) initialization routine failed. Error loading \"D:\\Program\\python\\Lib\\site-packages\\torch\\lib\\c10.dll\" or one of its dependencies.",
+    "created_at": "2026-02-26 16:02:35"
+  }
+}

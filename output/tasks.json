@@ -1,0 +1,28 @@
+{
+  "3ca4821e-5ed5-4141-bf6e-bd2a1033187c": {
+    "task_id": "3ca4821e-5ed5-4141-bf6e-bd2a1033187c",
+    "status": "done",
+    "course_id": "123ac",
+    "source_file": "ytmp3free.cc_bagaimana-otak-ai-bekerja-rahasia-di-balik-large-language-model-llm-youtubemp3free.org.mp3",
+    "language": "id",
+    "duration": 329.16,
+    "transcription_time": 67.81,
+    "realtime_factor": 4.85,
+    "total_chunks": 4,
+    "chunks_stored": 4,
+    "created_at": "2026-02-26 13:15:03"
+  },
+  "e9e83ed9-d928-41c1-948d-143372ecd34c": {
+    "task_id": "e9e83ed9-d928-41c1-948d-143372ecd34c",
+    "status": "done",
+    "course_id": "122ab",
+    "source_file": "Pisang.mp3",
+    "language": "id",
+    "duration": 129.24,
+    "transcription_time": 25.36,
+    "realtime_factor": 5.1,
+    "total_chunks": 1,
+    "chunks_stored": 1,
+    "created_at": "2026-02-26 14:09:17"
+  }
+}
