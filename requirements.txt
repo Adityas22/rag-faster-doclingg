@@ -10,8 +10,9 @@ faster-whisper==1.1.0
 google-generativeai==0.8.3
 google-genai==1.3.0
 
-# ── Docling ───────────────────────────────────────────────────────────────────
-docling==2.14.0
+# ── PDF Extraction (Docling — mendukung tabel, gambar, layout) ────────────────
+docling==2.75.0
+PyMuPDF==1.24.5
 
 # ── Vector DB ─────────────────────────────────────────────────────────────────
 qdrant-client==1.12.1
@@ -19,6 +20,7 @@ qdrant-client==1.12.1
 # ── LangGraph / LangChain ─────────────────────────────────────────────────────
 langgraph==0.2.58
 langchain-core>=0.3.23
+langchain-text-splitters>=0.3.0
 
 # ── Async HTTP ────────────────────────────────────────────────────────────────
 aiohttp==3.10.10

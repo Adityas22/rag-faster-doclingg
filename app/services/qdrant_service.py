@@ -58,7 +58,10 @@ class QdrantService:
             ("source_file", PayloadSchemaType.KEYWORD),
             ("type",        PayloadSchemaType.KEYWORD),
             ("task_id",     PayloadSchemaType.KEYWORD),
+            ("document_id", PayloadSchemaType.KEYWORD),   # filter per dokumen PDF
+            ("section",     PayloadSchemaType.KEYWORD),
             ("chunk_index", PayloadSchemaType.INTEGER),
+            ("chunk_id",    PayloadSchemaType.INTEGER),
         ]
 
         for field_name, schema_type in indexes:
@@ -72,7 +75,7 @@ class QdrantService:
             except Exception as e:
                 err = str(e).lower()
                 if "already exists" in err or "conflict" in err or "400" in err:
-                    pass  # index sudah ada, tidak masalah
+                    pass
                 else:
                     logger.warning(f"Index '{field_name}' warning: {e}")
 
