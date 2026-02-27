@@ -115,8 +115,6 @@ MAX_DOCUMENT_MB=10
 ALLOWED_ORIGINS=["http://localhost:8000","http://localhost:3000"]
 ```
 
-> ⚠️ **Jangan commit file `.env` ke GitHub.** Pastikan `.env` sudah ada di `.gitignore`.
-
 ### 3. Jalankan dengan Docker Compose
 
 ```bash
