@@ -1,6 +1,3 @@
-"""
-Celery Worker — PDF document extraction + token chunking + embedding task.
-"""
 import os
 import asyncio
 from app.workers.celery_app import celery
@@ -34,8 +31,9 @@ def extract_document_task(
         docling = DoclingService()
         doc_result = docling.extract_pdf(pdf_path, doc_title=doc_title)
         logger.info(
-            f"[DocWorker] Extracted: {doc_result['total_pages']} pages, "
-            f"{doc_result['total_chars']} chars"
+            f"[DocWorker] Extracted: {doc_result.get('total_pages', 0)} pages, "
+            f"{doc_result.get('total_chars', 0)} chars. "
+            f"Tables found: {len(doc_result.get('tables_markdown', []))}"
         )
 
         self.update_state(state="STARTED", meta={"step": "chunking"})
@@ -91,6 +89,7 @@ def extract_document_task(
             "total_chars": doc_result["total_chars"],
             "total_chunks": len(chunks),
             "chunks_stored": stored,
+            "tables_extracted": len(doc_result["tables_markdown"]),
         }
 
     except Exception as exc:

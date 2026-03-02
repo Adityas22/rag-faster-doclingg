@@ -12,6 +12,10 @@ from typing import Optional, List
 
 from app.utils.logger import get_logger
 
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode, PdfFormatOption
+from docling.document_converter import DocumentConverter
+
 logger = get_logger(__name__)
 
 _OCR_ENABLED = os.environ.get("DOCLING_OCR_ENABLED", "true").lower() == "true"
@@ -141,7 +145,9 @@ def _build_sections_docling(doc_json: dict) -> List[dict]:
             elif ref in tables_lookup:
                 if cur:
                     flush(cur)
-                md = _docling_table_to_markdown(tables_lookup[ref])
+                from docling.datamodel.document import Table
+                table_obj = Table.model_validate(tables_lookup[ref])
+                md = table_obj.export_to_markdown() # Ini akan menghasilkan tabel | yang rapi
                 if md:
                     if cur is None:
                         cur = {"title": "PREFACE", "content": [], "page_start": 1}
@@ -346,84 +352,60 @@ def create_semantic_chunks(sections, source_filename, chunk_size=1000, chunk_ove
 
 
 class DoclingService:
+    def __init__(self):
+        from docling.datamodel.pipeline_options import (
+            PdfPipelineOptions, TableFormerMode, EasyOcrOptions
+        )
+        
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = True
+        pipeline_options.do_table_structure = True
+        # ↓ WAJIB True agar OCR pada gambar/scan bisa jalan
+        pipeline_options.generate_page_images = True
+        pipeline_options.generate_picture_images = True
+        
+        # Gunakan EasyOCR agar teks dalam gambar ikut diambil
+        pipeline_options.ocr_options = EasyOcrOptions(
+            lang=["id", "en"],  # sesuaikan bahasa dokumen
+            use_gpu=False,      # ganti True jika ada GPU
+        )
+        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
 
-    def is_available(self) -> bool:
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa
-            return True
-        except ImportError as e:
-            logger.warning(f"[PDF] Dependency missing: {e}")
-            return False
+        self.doc_converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
 
-    def _get_cache_path(self, pdf_path: str) -> str:
-        p = Path(pdf_path)
-        return str(p.parent / f"{p.stem}_docling_cache.json")
+    def extract_pdf(self, pdf_path: str, doc_title: str = None):
+        logger.info(f"[DoclingService] Extracting: {pdf_path}")
 
-    def extract_pdf(self, pdf_path: str, doc_title: Optional[str] = None, do_ocr: bool = True) -> dict:
-        if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        conv_result = self.doc_converter.convert(pdf_path)
 
-        pdf_name   = Path(pdf_path).name
-        cache_path = self._get_cache_path(pdf_path)
-        logger.info(f"[PDF] Extracting: {pdf_name} | OCR={_OCR_ENABLED}")
+        # export_to_markdown() → tabel otomatis jadi format | kolom | baris |
+        full_text_markdown = conv_result.document.export_to_markdown()
 
-        doc_json  = None
-        used_mode = "pymupdf"
+        total_pages = len(conv_result.pages)
 
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    doc_json = json.load(f)
-                used_mode = "docling_cache"
-                logger.info(f"[Docling] ✅ Load dari cache")
-            except Exception as e:
-                logger.warning(f"[Docling] Cache rusak: {e}")
-                doc_json = None
-
-        if doc_json is None:
-            if _run_docling(pdf_path, cache_path):
-                try:
-                    with open(cache_path, "r", encoding="utf-8") as f:
-                        doc_json = json.load(f)
-                    used_mode = "docling"
-                except Exception as e:
-                    logger.warning(f"[Docling] Gagal baca hasil: {e}")
-
-        import fitz
-        doc = fitz.open(pdf_path)
-        page_count = doc.page_count
-        full_text  = "\n".join(page.get_text() for page in doc)
-        doc.close()
-
-        if doc_json is not None:
-            sections = _build_sections_docling(doc_json)
-        else:
-            logger.warning("[PDF] Docling gagal → fallback PyMuPDF")
-            used_mode = "pymupdf"
-            blocks, tables = _extract_blocks_pymupdf(pdf_path)
-            sections = _build_sections_pymupdf(blocks, tables)
-
-        if not sections and full_text.strip():
-            sections = [{"title": "DOCUMENT", "content": [full_text.strip()], "page_start": 1}]
-
-        if not sections:
-            raise ValueError("Tidak ada teks yang dapat diekstrak.")
-
-        chunks = create_semantic_chunks(sections, pdf_name)
+        # Kumpulkan markdown tabel secara terpisah (untuk logging/debug)
+        tables_markdown = []
+        for table in conv_result.document.tables:
+            md = table.export_to_markdown()
+            if md:
+                tables_markdown.append(md)
 
         logger.info(
-            f"[PDF] ✅ [{used_mode}]: {page_count}p | "
-            f"{len(sections)} sections | {len(chunks)} chunks"
+            f"[DoclingService] ✅ {total_pages} pages | "
+            f"{len(full_text_markdown)} chars | "
+            f"{len(tables_markdown)} tables"
         )
 
         return {
-            "source_file":     pdf_name,
-            "doc_title":       doc_title or Path(pdf_path).stem,
-            "total_pages":     page_count,
-            "total_chars":     len(full_text),
-            "full_text":       full_text,
-            "total_sections":  len(sections),
-            "sections":        sections,
-            "chunks":          chunks,
-            "extraction_mode": used_mode,
+            "source_file": os.path.basename(pdf_path),   # ← basename saja, bukan full path
+            "doc_title": doc_title if doc_title else os.path.basename(pdf_path),
+            "full_text": full_text_markdown,
+            "total_pages": total_pages,
+            "total_chars": len(full_text_markdown),
+            "tables_markdown": tables_markdown,           # ← KEY INI yang dipanggil worker
+            "tables_count": len(tables_markdown),
         }

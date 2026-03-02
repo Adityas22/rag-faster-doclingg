@@ -87,42 +87,34 @@ class QdrantService:
             return 0
 
     async def upsert_vectors(self, items: List[dict]) -> int:
-        """
-        Simpan vectors ke Qdrant dengan Append Mode.
-        ID global berlanjut dari jumlah points yang sudah ada.
-        """
         from qdrant_client.models import PointStruct
+        import uuid  # tambah di top of file
 
         if not items:
             return 0
-
-        loop = asyncio.get_event_loop()
-        existing_count = await loop.run_in_executor(None, self._get_existing_count)
-        logger.info(
-            f"[Qdrant] Upserting {len(items)} vectors | "
-            f"ID: {existing_count} → {existing_count + len(items) - 1}"
-        )
 
         upload_ts = time.time()
         points = []
 
         for i, item in enumerate(items):
-            global_id = existing_count + i
+            point_id = str(uuid.uuid4())  # ← UUID unik, tidak bisa collision
             meta = item.get("metadata", {})
 
             points.append(
                 PointStruct(
-                    id=global_id,
+                    id=point_id,
                     vector=item["vector"],
                     payload={
                         "text": item["text"],
                         "original_text": item["text"],
-                        "global_chunk_id": global_id,
                         "upload_timestamp": upload_ts,
-                        **meta,
+                        **meta,  # chunk_index tetap ada di metadata untuk sorting
                     },
                 )
             )
+
+        loop = asyncio.get_event_loop()
+        logger.info(f"[Qdrant] Upserting {len(points)} vectors (UUID IDs)")
 
         await loop.run_in_executor(
             None,
@@ -132,10 +124,7 @@ class QdrantService:
             ),
         )
 
-        logger.info(
-            f"✅ Upserted {len(points)} vectors "
-            f"(total: {existing_count + len(points)} points)"
-        )
+        logger.info(f"✅ Upserted {len(points)} vectors")
         return len(points)
 
     async def search(
