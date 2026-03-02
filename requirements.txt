@@ -1,0 +1,8 @@
+# Untuk install semua sekaligus di lokal:
+#   pip install -r requirements.txt
+# Di Docker pakai requirements/ masing-masing
+
+-r requirements/base.txt
+-r requirements/api.txt
+-r requirements/docling.txt
+-r requirements/whisper.txt

@@ -1,0 +1,12 @@
+# ── Whisper Worker — extends base.txt ─────────────────────────────────────────
+-r base.txt
+
+# Audio transcription (berat: tarik ctranslate2 + model)
+faster-whisper==1.1.0
+
+# Audio processing
+pydub==0.25.1
+noisereduce==3.0.3
+soundfile==0.12.1
+librosa==0.10.2.post1
+numpy==1.26.4

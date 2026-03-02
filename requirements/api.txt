@@ -1,0 +1,17 @@
+# ── API + Generate Worker ──────────────────────────────────────────────────────
+# Extends base.txt
+# TIDAK ada docling, whisper, torch, audio libs → image tetap kecil
+-r base.txt
+
+# FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+
+# LangGraph untuk orchestration & RAG
+langgraph==0.2.58
+langchain-core>=0.3.23
+langchain-text-splitters>=0.3.0
+
+# Celery monitoring dashboard
+flower==2.0.1

@@ -1,0 +1,9 @@
+# ── Docling Worker — extends base.txt ─────────────────────────────────────────
+-r base.txt
+
+# PDF parsing (berat: tarik torch ~2GB, hanya di container ini)
+docling==2.75.0
+PyMuPDF==1.24.5
+
+# LangChain splitter untuk chunking
+langchain-text-splitters>=0.3.0

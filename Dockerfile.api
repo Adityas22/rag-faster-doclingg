@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements dulu → layer ini di-cache selama requirements tidak berubah
+COPY requirements/base.txt requirements/base.txt
+COPY requirements/api.txt  requirements/api.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements/api.txt
+
+# Baru copy kode → perubahan kode tidak invalidate layer pip
+COPY app/ ./app/
+
+RUN mkdir -p /app/temp /app/output
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
