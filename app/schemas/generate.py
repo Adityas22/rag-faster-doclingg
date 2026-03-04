@@ -1,3 +1,10 @@
+"""
+Schemas untuk endpoint /generate.
+
+Penambahan untuk async Celery flow:
+  - GenerateTaskResponse  → response saat task di-dispatch (POST)
+  - GenerateStatusResponse → response saat cek status (GET /status/{task_id})
+"""
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Literal, Any
 
@@ -56,10 +63,6 @@ class GenerateRequest(BaseModel):
             self.topic = None
         return self
 
-    # PENTING: format examples di sini adalah request body langsung —
-    # field langsung di root JSON, TIDAK dibungkus "value" atau "summary".
-    # Format {"summary": ..., "value": {...}} adalah format Swagger UI lama
-    # yang TIDAK kompatibel dengan Pydantic v2 dan akan membuat topic tidak terbaca.
     model_config = {
         "json_schema_extra": {
             "example": {
@@ -70,6 +73,55 @@ class GenerateRequest(BaseModel):
             }
         }
     }
+
+
+# ── Async Task Response (NEW) ─────────────────────────────────────────────────
+
+class GenerateTaskResponse(BaseModel):
+    """
+    Response saat task generate di-dispatch ke Celery.
+    Client harus poll GET /generate/status/{task_id} untuk hasil.
+    """
+    task_id: str = Field(..., description="UUID task — gunakan untuk poll status")
+    celery_task_id: str = Field(..., description="ID internal Celery task")
+    status: Literal["pending"] = Field(default="pending")
+    content_type: str
+    course_id: Optional[str] = None
+    source_file: Optional[str] = None
+    topic: Optional[str] = None
+    count: int
+    difficulty: Optional[str] = None
+    language: str
+    created_at: str = Field(..., description="Waktu task dibuat (server time)")
+    status_url: str = Field(..., description="URL untuk poll status task ini")
+
+
+class GenerateStatusResponse(BaseModel):
+    """
+    Response untuk GET /generate/status/{task_id}.
+    Field `result` hanya ada jika status == 'done'.
+    """
+    task_id: str
+    celery_task_id: Optional[str] = None
+    status: Literal["pending", "processing", "done", "error"]
+    content_type: Optional[str] = None
+    course_id: Optional[str] = None
+    source_file: Optional[str] = None
+    topic: Optional[str] = None
+    count: Optional[int] = None
+    difficulty: Optional[str] = None
+    language: Optional[str] = None
+    result: Optional[Any] = Field(
+        default=None,
+        description="Hasil generate — ada jika status='done'"
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Pesan error — ada jika status='error'"
+    )
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 # ── Flashcard ─────────────────────────────────────────────────────────────────
@@ -107,7 +159,7 @@ class QuizEssayItem(BaseModel):
 class GenerateQuizResponse(BaseModel):
     content_type: str
     count: int
-    difficulty: Optional[str] = None  # Hanya ada di sini
+    difficulty: Optional[str] = None
     items: List[Any]
     context_chunks_used: int
     context_scope: str
