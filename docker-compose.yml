@@ -18,6 +18,7 @@ services:
     volumes:
       - shared_temp:/app/temp
       - shared_output:/app/output
+      - ./app:/app/app # ← mount code lokal, edit file = langsung berlaku
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -38,9 +39,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DOCLING_OCR_ENABLED=true
       - DOCLING_TABLE_STRUCTURE=true
-      - HF_HUB_DISABLE_SYMLINKS_WARNING=1          ← tambah
-      - HF_HUB_CACHE=/root/.cache/huggingface      ← tambah
-      - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface  ← tambah
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+      - HF_HUB_CACHE=/root/.cache/huggingface
+      - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
     depends_on:
       - redis
       - qdrant
@@ -48,6 +49,7 @@ services:
       - shared_temp:/app/temp
       - shared_output:/app/output
       - docling_models:/root/.cache
+      - ./app:/app/app # ← mount code lokal
     restart: unless-stopped
     deploy:
       resources:
@@ -72,6 +74,7 @@ services:
     volumes:
       - shared_temp:/app/temp
       - whisper_models:/root/.cache/huggingface
+      - ./app:/app/app # ← mount code lokal
     restart: unless-stopped
     deploy:
       resources:
@@ -94,6 +97,25 @@ services:
       - redis
       - qdrant
       - ollama
+    volumes:
+      - ./app:/app/app # ← mount code lokal
+    restart: unless-stopped
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ai_course_flower
+    command: celery -A app.workers.celery_app flower --port=5555 --basic_auth=admin:admin123
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - ./app:/app/app # ← mount code lokal
     restart: unless-stopped
 
   redis:
@@ -135,29 +157,6 @@ services:
         "-c",
         "ollama serve & sleep 8 && ollama pull llama3.2 && wait",
       ]
-    # GPU — uncomment jika ada NVIDIA:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-  flower:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: ai_course_flower
-    command: celery -A app.workers.celery_app flower --port=5555 --basic_auth=admin:admin123
-    ports:
-      - "5555:5555"
-    env_file: .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-    restart: unless-stopped
 
 volumes:
   redis_data:

@@ -1,277 +1,335 @@
 """
-Generate Endpoint — RAG content generation via Celery + Redis.
+Generate Endpoint — Material, Flashcard, dan Quiz via Celery + Redis.
 
-Arsitektur ASYNC (sama dengan document/audio):
-  POST   /generate/flashcard           → dispatch ke generate_worker → return task_id
-  POST   /generate/quiz/mc             → dispatch ke generate_worker → return task_id
-  POST   /generate/quiz/essay          → dispatch ke generate_worker → return task_id
-  POST   /generate/summary             → dispatch ke generate_worker → return task_id
-  POST   /generate/material            → dispatch ke generate_worker → return task_id
-  GET    /generate/status/{task_id}    → cek status dari Redis
-  GET    /generate/tasks               → list semua task generate
+Skenario:
+  1. User upload PDF/Audio → sudah tersimpan di Qdrant
+  2. POST /generate/material   → generate materi → simpan di Laravel (MySQL)
+  3. POST /generate/flashcard  → generate flashcard dari Qdrant (opsional + material_context)
+  4. POST /generate/quiz       → generate quiz dari Qdrant (opsional + material_context)
+                                  quiz_type: essay | multiple_choice_single | multiple_choice_multiple
 
-Flow per endpoint:
-  1. Terima GenerateRequest dari client
-  2. Generate task_id (UUID)
-  3. Simpan status 'pending' ke Redis
-  4. Dispatch task ke celery_generate worker (queue: generate)
-  5. Return GenerateTaskResponse dengan task_id + status_url
-  6. Client poll GET /generate/status/{task_id}
-  7. Worker selesai → simpan result ke Redis
-  8. GET status → return GenerateStatusResponse dengan result
+Semua endpoint ASYNC via Celery:
+  POST   → dispatch → return {task_id, status_url}
+  GET    /generate/status/{task_id}  → poll hasil dari Redis
+  GET    /generate/tasks             → list semua task
 
-PENTING: request.content_type di-override per endpoint via model_copy()
+Status lifecycle: pending → processing → done / error
 """
 import uuid
 from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query
+
 from app.schemas.generate import (
-    GenerateRequest,
+    GenerateMaterialRequest,
+    GenerateFlashcardRequest,
+    GenerateQuizRequest,
     GenerateTaskResponse,
     GenerateStatusResponse,
 )
-from app.services.redis_service import (
-    save_task_result,
-    get_task_result,
-    list_tasks,
-)
+from app.services.redis_service import save_task_result, get_task_result, list_tasks
 from app.utils.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
 
 
-# ── Helper ─────────────────────────────────────────────────────────────────────
-
-def _dispatch_generate_task(
-    request: GenerateRequest,
-    content_type: str,
-) -> GenerateTaskResponse:
-    """
-    Dispatch task generate ke Celery queue 'generate' dan simpan
-    status awal ke Redis. Dipakai oleh semua endpoint POST.
-
-    Args:
-        request: GenerateRequest dari client
-        content_type: jenis konten yang di-override per endpoint
-
-    Returns:
-        GenerateTaskResponse dengan task_id dan status_url
-    """
-    from app.workers.generate_worker import generate_content_task
-
-    # Override content_type sesuai endpoint (Pydantic v2 safe)
-    req = request.model_copy(update={"content_type": content_type})
-
-    task_id = str(uuid.uuid4())
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # ── Simpan status awal ke Redis sebelum dispatch ───────────────────────────
-    save_task_result(task_id, {
-        "task_id": task_id,
-        "status": "pending",
-        "content_type": content_type,
-        "course_id": req.course_id,
-        "source_file": req.source_file,
-        "topic": req.topic,
-        "count": req.count,
-        "difficulty": req.difficulty,
-        "language": req.language,
-        "created_at": created_at,
-    })
-
-    # ── Dispatch ke Celery queue 'generate' ───────────────────────────────────
-    celery_task = generate_content_task.apply_async(
-        kwargs={
-            "task_id": task_id,
-            "course_id": req.course_id,
-            "content_type": content_type,
-            "topic": req.topic,
-            "source_file": req.source_file,
-            "count": req.count,
-            "difficulty": req.difficulty,
-            "language": req.language,
-        },
-        task_id=task_id,
-        queue="generate",
-    )
-
-    # ── Update celery_task_id ke Redis ─────────────────────────────────────────
-    save_task_result(task_id, {
-        "task_id": task_id,
-        "celery_task_id": celery_task.id,
-        "status": "pending",
-        "content_type": content_type,
-        "course_id": req.course_id,
-        "source_file": req.source_file,
-        "topic": req.topic,
-        "count": req.count,
-        "difficulty": req.difficulty,
-        "language": req.language,
-        "created_at": created_at,
-    })
-
-    logger.info(
-        f"[Generate] Dispatched | task_id={task_id} | celery_id={celery_task.id} "
-        f"| type={content_type} | course={req.course_id} | topic={req.topic!r}"
-    )
-
-    return GenerateTaskResponse(
-        task_id=task_id,
-        celery_task_id=celery_task.id,
-        status="pending",
-        content_type=content_type,
-        course_id=req.course_id,
-        source_file=req.source_file,
-        topic=req.topic,
-        count=req.count,
-        difficulty=req.difficulty,
-        language=req.language,
-        created_at=created_at,
-        status_url=f"/api/v1/generate/status/{task_id}",
-    )
-
-
-# ── POST /flashcard ────────────────────────────────────────────────────────────
-
-@router.post(
-    "/flashcard",
-    response_model=GenerateTaskResponse,
-    summary="Generate Flashcard (Async)",
-    description="""
-Generate flashcard dari materi di Qdrant — diproses async via Celery.
-
-**Flow:**
-1. POST request ini → return `task_id` + `status_url`
-2. Poll `GET /generate/status/{task_id}` hingga status = `done`
-3. Ambil hasil dari field `result.flashcards`
-
-**Format kartu:**
-- **front** — heading / kata kunci singkat (tampilan depan)
-- **back** — penjelasan detail (tampilan belakang)
-
-`course_id` dan `source_file` opsional — kosong = ambil dari seluruh data (global).
-`difficulty` tidak perlu diisi.
-    """,
-)
-async def generate_flashcard(request: GenerateRequest):
-    try:
-        return _dispatch_generate_task(request, content_type="flashcard")
-    except Exception as e:
-        logger.error(f"[Generate] Dispatch flashcard error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /quiz/mc ──────────────────────────────────────────────────────────────
-
-@router.post(
-    "/quiz/mc",
-    response_model=GenerateTaskResponse,
-    summary="Generate Quiz Pilihan Ganda (Async)",
-    description="""
-Generate soal pilihan ganda (A/B/C/D + kunci jawaban + penjelasan) — async via Celery.
-
-**Flow:**
-1. POST → return `task_id`
-2. Poll `GET /generate/status/{task_id}`
-3. Hasil ada di `result.items`
-
-`difficulty`: `easy` | `medium` | `hard`
-    """,
-)
-async def generate_quiz_mc(request: GenerateRequest):
-    try:
-        return _dispatch_generate_task(request, content_type="quiz_mc")
-    except Exception as e:
-        logger.error(f"[Generate] Dispatch quiz_mc error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /quiz/essay ───────────────────────────────────────────────────────────
-
-@router.post(
-    "/quiz/essay",
-    response_model=GenerateTaskResponse,
-    summary="Generate Quiz Essay (Async)",
-    description="""
-Generate soal essay (pertanyaan + contoh jawaban + poin-poin kunci) — async via Celery.
-
-**Flow:**
-1. POST → return `task_id`
-2. Poll `GET /generate/status/{task_id}`
-3. Hasil ada di `result.items`
-
-`difficulty`: `easy` | `medium` | `hard`
-    """,
-)
-async def generate_quiz_essay(request: GenerateRequest):
-    try:
-        return _dispatch_generate_task(request, content_type="quiz_essay")
-    except Exception as e:
-        logger.error(f"[Generate] Dispatch quiz_essay error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /summary ──────────────────────────────────────────────────────────────
-
-@router.post(
-    "/summary",
-    response_model=GenerateTaskResponse,
-    summary="Generate Ringkasan Materi (Async)",
-    description="""
-Buat ringkasan dari materi di Qdrant — async via Celery.
-
-**Flow:**
-1. POST → return `task_id`
-2. Poll `GET /generate/status/{task_id}`
-3. Hasil ada di `result.summary` dan `result.key_points`
-
-`difficulty` tidak perlu diisi.
-`count` = jumlah key_points yang dihasilkan.
-    """,
-)
-async def generate_summary(request: GenerateRequest):
-    try:
-        return _dispatch_generate_task(request, content_type="summary")
-    except Exception as e:
-        logger.error(f"[Generate] Dispatch summary error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /material ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /generate/material
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/material",
     response_model=GenerateTaskResponse,
     summary="Generate Materi Pelajaran Lengkap (Async)",
     description="""
-Generate materi lengkap (judul, pembuka, isi, contoh, latihan) — async via Celery.
+Generate materi pembelajaran dari PDF/Audio yang sudah di-upload ke Qdrant.
+Cukup kirim `course_id` — semua file dalam course tersebut akan digunakan sebagai sumber.
+
+**Output JSON** (tersedia saat `status=done`):
+```json
+{
+  "title": "Judul materi",
+  "introduction": "Paragraf pembuka",
+  "sections": [{"heading": "Sub-topik", "body": "Penjelasan..."}],
+  "content": "Isi materi lengkap",
+  "key_points": ["Poin 1", "Poin 2"],
+  "summary": "Kesimpulan singkat"
+}
+```
 
 **Flow:**
-1. POST → return `task_id`
-2. Poll `GET /generate/status/{task_id}`
-3. Hasil ada di `result.title`, `result.content`, `result.examples`, dll.
-
-`difficulty` tidak perlu diisi.
-`count` tidak berlaku untuk material.
-    """,
+1. POST request → return `task_id` + `status_url`
+2. Poll `GET /generate/status/{task_id}` hingga `status = done`
+3. Ambil `result` → simpan di backend Laravel (MySQL)
+""",
 )
-async def generate_material(request: GenerateRequest):
+async def generate_material(request: GenerateMaterialRequest):
+    from app.workers.generate_worker import generate_material_task
+
+    task_id = str(uuid.uuid4())
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "status": "pending",
+        "generate_type": "material",
+        "course_id": request.course_id,
+        "topic": request.topic,
+        "language": request.language,
+        "created_at": created_at,
+    })
+
     try:
-        return _dispatch_generate_task(request, content_type="material")
+        celery_task = generate_material_task.apply_async(
+            kwargs={
+                "task_id": task_id,
+                "course_id": request.course_id,
+                "topic": request.topic,
+                "language": request.language,
+            },
+            task_id=task_id,
+            queue="generate",
+        )
     except Exception as e:
         logger.error(f"[Generate] Dispatch material error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "celery_task_id": celery_task.id,
+        "status": "pending",
+        "generate_type": "material",
+        "course_id": request.course_id,
+        "topic": request.topic,
+        "language": request.language,
+        "created_at": created_at,
+    })
 
-# ── GET /status/{task_id} ──────────────────────────────────────────────────────
+    logger.info(f"[Generate] Material dispatched | task_id={task_id} | course={request.course_id}")
+
+    return GenerateTaskResponse(
+        task_id=task_id,
+        celery_task_id=celery_task.id,
+        status="pending",
+        generate_type="material",
+        course_id=request.course_id,
+        topic=request.topic,
+        language=request.language,
+        created_at=created_at,
+        status_url=f"/api/v1/generate/status/{task_id}",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /generate/flashcard
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/flashcard",
+    response_model=GenerateTaskResponse,
+    summary="Generate Flashcard (Async, Jumlah Dinamis)",
+    description="""
+Generate flashcard dari materi di Qdrant.
+
+**Parameter penting:**
+- `count`: jumlah flashcard yang diinginkan (1–50), **default 10**
+- `material_context` *(opsional)*: teks `content` dari hasil generate materi  
+  (dari Laravel) untuk meningkatkan akurasi flashcard
+
+**Output** (`result.flashcards`):
+```json
+[
+  {"front": "Kata kunci", "back": "Penjelasan 2-4 kalimat"}
+]
+```
+""",
+)
+async def generate_flashcard(request: GenerateFlashcardRequest):
+    from app.workers.generate_worker import generate_flashcard_task
+
+    task_id = str(uuid.uuid4())
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "status": "pending",
+        "generate_type": "flashcard",
+        "course_id": request.course_id,
+        "source_file": request.source_file,
+        "topic": request.topic,
+        "count": request.count,
+        "language": request.language,
+        "created_at": created_at,
+    })
+
+    try:
+        celery_task = generate_flashcard_task.apply_async(
+            kwargs={
+                "task_id": task_id,
+                "course_id": request.course_id,
+                "source_file": request.source_file,
+                "topic": request.topic,
+                "material_context": request.material_context,
+                "count": request.count,
+                "language": request.language,
+            },
+            task_id=task_id,
+            queue="generate",
+        )
+    except Exception as e:
+        logger.error(f"[Generate] Dispatch flashcard error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "celery_task_id": celery_task.id,
+        "status": "pending",
+        "generate_type": "flashcard",
+        "course_id": request.course_id,
+        "source_file": request.source_file,
+        "topic": request.topic,
+        "count": request.count,
+        "language": request.language,
+        "created_at": created_at,
+    })
+
+    logger.info(
+        f"[Generate] Flashcard dispatched | task_id={task_id} | "
+        f"course={request.course_id} | count={request.count}"
+    )
+
+    return GenerateTaskResponse(
+        task_id=task_id,
+        celery_task_id=celery_task.id,
+        status="pending",
+        generate_type="flashcard",
+        course_id=request.course_id,
+        source_file=request.source_file,
+        topic=request.topic,
+        count=request.count,
+        language=request.language,
+        created_at=created_at,
+        status_url=f"/api/v1/generate/status/{task_id}",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /generate/quiz
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/quiz",
+    response_model=GenerateTaskResponse,
+    summary="Generate Quiz (Async, Tipe & Jumlah Dinamis)",
+    description="""
+Generate soal quiz dari materi di Qdrant.
+
+**`quiz_type`** (wajib pilih salah satu):
+| Nilai | Deskripsi |
+|-------|-----------|
+| `essay` | Soal esai dengan contoh jawaban + poin penilaian |
+| `multiple_choice_single` | Pilihan ganda A/B/C/D, **1 jawaban benar** |
+| `multiple_choice_multiple` | Pilihan ganda A/B/C/D/E, **>1 jawaban bisa benar** |
+
+**Parameter penting:**
+- `count`: jumlah soal (1–50), **default 5**
+- `difficulty`: `easy` | `medium` | `hard`
+- `material_context` *(opsional)*: teks `content` dari materi di Laravel
+
+**Output** (`result.items`) struktur per tipe:
+- `essay`: `{question, sample_answer, key_points[], score_weight}`
+- `multiple_choice_single`: `{question, options[], correct_answer, explanation}`
+- `multiple_choice_multiple`: `{question, options[], correct_answers[], explanation}`
+""",
+)
+async def generate_quiz(request: GenerateQuizRequest):
+    from app.workers.generate_worker import generate_quiz_task
+
+    task_id = str(uuid.uuid4())
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "status": "pending",
+        "generate_type": "quiz",
+        "quiz_type": request.quiz_type,
+        "course_id": request.course_id,
+        "source_file": request.source_file,
+        "topic": request.topic,
+        "count": request.count,
+        "difficulty": request.difficulty,
+        "language": request.language,
+        "created_at": created_at,
+    })
+
+    try:
+        celery_task = generate_quiz_task.apply_async(
+            kwargs={
+                "task_id": task_id,
+                "course_id": request.course_id,
+                "source_file": request.source_file,
+                "topic": request.topic,
+                "material_context": request.material_context,
+                "quiz_type": request.quiz_type,
+                "count": request.count,
+                "difficulty": request.difficulty,
+                "language": request.language,
+            },
+            task_id=task_id,
+            queue="generate",
+        )
+    except Exception as e:
+        logger.error(f"[Generate] Dispatch quiz error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    save_task_result(task_id, {
+        "task_id": task_id,
+        "celery_task_id": celery_task.id,
+        "status": "pending",
+        "generate_type": "quiz",
+        "quiz_type": request.quiz_type,
+        "course_id": request.course_id,
+        "source_file": request.source_file,
+        "topic": request.topic,
+        "count": request.count,
+        "difficulty": request.difficulty,
+        "language": request.language,
+        "created_at": created_at,
+    })
+
+    logger.info(
+        f"[Generate] Quiz dispatched | task_id={task_id} | type={request.quiz_type} | "
+        f"course={request.course_id} | count={request.count} | difficulty={request.difficulty}"
+    )
+
+    return GenerateTaskResponse(
+        task_id=task_id,
+        celery_task_id=celery_task.id,
+        status="pending",
+        generate_type="quiz",
+        quiz_type=request.quiz_type,
+        course_id=request.course_id,
+        source_file=request.source_file,
+        topic=request.topic,
+        count=request.count,
+        difficulty=request.difficulty,
+        language=request.language,
+        created_at=created_at,
+        status_url=f"/api/v1/generate/status/{task_id}",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /generate/status/{task_id}
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/status/{task_id}",
     response_model=GenerateStatusResponse,
     summary="Cek Status Task Generate",
     description="""
-Poll status task generate yang sedang diproses oleh celery_generate worker.
+Poll status task generate yang sedang diproses oleh worker.
 
 **Status lifecycle:**
 ```
@@ -279,14 +337,13 @@ pending → processing → done
                      ↘ error
 ```
 
-Jika `status = done`, field `result` akan berisi konten yang di-generate.
+Jika `status = done`, field `result` berisi output (material / flashcards / quiz items).
 Jika `status = error`, field `error` berisi pesan error.
 
-Sumber data: **Redis** (key: `gen_task:{task_id}`)
-    """,
+Data diambil dari **Redis** (TTL: 1 jam).
+""",
 )
 async def get_generate_status(task_id: str):
-    # ── Ambil dari Redis ───────────────────────────────────────────────────────
     data = get_task_result(task_id)
 
     if data:
@@ -295,22 +352,20 @@ async def get_generate_status(task_id: str):
             if k in GenerateStatusResponse.model_fields
         })
 
-    # ── Fallback: cek Celery backend langsung (jika Redis key expired) ─────────
+    # Fallback ke Celery backend langsung
     try:
         from app.workers.celery_app import celery
         celery_result = celery.AsyncResult(task_id)
         celery_state = celery_result.state
 
         state_map = {
-            "PENDING":  "pending",
-            "STARTED":  "processing",
-            "SUCCESS":  "done",
-            "FAILURE":  "error",
-            "RETRY":    "processing",
-            "REVOKED":  "error",
+            "PENDING": "pending",
+            "STARTED": "processing",
+            "SUCCESS": "done",
+            "FAILURE": "error",
+            "RETRY": "processing",
+            "REVOKED": "error",
         }
-
-        status = state_map.get(celery_state, "pending")
 
         if celery_state == "SUCCESS":
             result_data = celery_result.result or {}
@@ -327,7 +382,10 @@ async def get_generate_status(task_id: str):
                 error=str(celery_result.result),
             )
 
-        return GenerateStatusResponse(task_id=task_id, status=status)
+        return GenerateStatusResponse(
+            task_id=task_id,
+            status=state_map.get(celery_state, "pending"),
+        )
 
     except Exception as e:
         logger.warning(f"[Generate] Status fallback error: {e}")
@@ -337,7 +395,9 @@ async def get_generate_status(task_id: str):
         )
 
 
-# ── GET /tasks ─────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /generate/tasks
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/tasks",
@@ -345,30 +405,25 @@ async def get_generate_status(task_id: str):
     description="""
 Ambil semua task generate yang masih ada di Redis (TTL 1 jam).
 
-Gunakan query param `status` untuk filter:
-- `pending` — belum diproses
-- `processing` — sedang diproses worker
-- `done` — selesai, result tersedia
-- `error` — gagal
-    """,
+Filter tersedia:
+- `status`: `pending` | `processing` | `done` | `error`
+- `generate_type`: `material` | `flashcard` | `quiz`
+- `quiz_type`: `essay` | `multiple_choice_single` | `multiple_choice_multiple`
+""",
 )
 async def list_generate_tasks(
-    status: str = Query(
-        default=None,
-        description="Filter by status: pending | processing | done | error",
-    ),
-    content_type: str = Query(
-        default=None,
-        description="Filter by content_type: flashcard | quiz_mc | quiz_essay | summary | material",
-    ),
+    status: str = Query(default=None, description="Filter by status"),
+    generate_type: str = Query(default=None, description="Filter: material | flashcard | quiz"),
+    quiz_type: str = Query(default=None, description="Filter: essay | multiple_choice_single | multiple_choice_multiple"),
 ):
     tasks = list_tasks(prefix="gen_task:")
 
     if status:
         tasks = [t for t in tasks if t.get("status") == status]
-
-    if content_type:
-        tasks = [t for t in tasks if t.get("content_type") == content_type]
+    if generate_type:
+        tasks = [t for t in tasks if t.get("generate_type") == generate_type]
+    if quiz_type:
+        tasks = [t for t in tasks if t.get("quiz_type") == quiz_type]
 
     return {
         "total": len(tasks),
