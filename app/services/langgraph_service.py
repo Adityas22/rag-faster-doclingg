@@ -15,8 +15,9 @@ Skenario:
      Output: items[] sesuai tipe
 
 Filtering:
-  - Score gap detection + keyword relevance check
+  - Score gap detection + keyword relevance check (typo-tolerant)
   - Threshold adaptif: best_score * 0.75
+  - Topic di-clean dulu via LLM sebelum dipakai sebagai query & filter
 """
 import asyncio
 import json
@@ -31,10 +32,11 @@ logger = get_logger(__name__)
 
 # ── Konfigurasi Filtering ─────────────────────────────────────────────────────
 _summary_cache: dict = {}
+_topic_cache: dict = {}          # cache hasil clean topic agar tidak call LLM berulang
 SCORE_RATIO_THRESHOLD = 0.75
 MIN_SCORE_ABSOLUTE = 0.40
 SCORE_GAP_CUTOFF = 0.15
-TOP_RELEVANT_CHUNKS = 8   # sedikit lebih banyak untuk materi lengkap
+TOP_RELEVANT_CHUNKS = 8
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +61,62 @@ def _scope_label(course_id: Optional[str], source_file: Optional[str]) -> str:
 
 def _cache_key(course_id, source_file, total_points):
     return f"{course_id or '__all__'}|{source_file or '__all__'}|{total_points}"
+
+
+# ── Topic Cleaner — normalisasi typo & singkatan via LLM ─────────────────────
+async def _clean_topic(raw_topic: str) -> str:
+    """
+    Normalisasi topic dari user sebelum dipakai sebagai query & keyword filter.
+
+    Menangani:
+    - Typo: "bautkan" → "buat", "dlam" → "dalam", "mmbuat" → "membuat"
+    - Singkatan: "AI" → "Artificial Intelligence", "ML" → "Machine Learning"
+    - Bahasa campuran: tetap dipertahankan maknanya
+
+    Hasil di-cache agar tidak memanggil LLM berulang untuk topic yang sama.
+    """
+    key = raw_topic.strip().lower()
+    if key in _topic_cache:
+        logger.info(f"[TopicClean] Cache hit: {raw_topic!r} → {_topic_cache[key]!r}")
+        return _topic_cache[key]
+
+    try:
+        from google import genai as genai_new
+        client = genai_new.Client(api_key=settings.GEMINI_API_KEY)
+        loop = asyncio.get_event_loop()
+
+        prompt = f"""Perbaiki teks topik berikut dari input pengguna.
+Tugas:
+1. Koreksi typo/salah ketik menjadi kata yang benar
+2. Ekspansi singkatan yang umum (misal: AI → Artificial Intelligence)
+3. Pertahankan bahasa aslinya (Indonesia/Inggris)
+4. Jika sudah benar, kembalikan apa adanya
+
+Input: "{raw_topic}"
+
+Balas HANYA dengan teks topik yang sudah diperbaiki, tanpa penjelasan, tanpa tanda kutip."""
+
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.models.generate_content(
+                model=settings.GEMINI_GENERATE_MODEL,
+                contents=prompt,
+            ),
+        )
+        cleaned = response.text.strip().strip('"').strip("'")
+
+        # Validasi — kalau LLM balas dengan kalimat panjang, fallback ke raw
+        if len(cleaned) > len(raw_topic) * 3 or "\n" in cleaned:
+            logger.warning(f"[TopicClean] LLM response tidak valid, fallback: {cleaned!r}")
+            cleaned = raw_topic
+
+        _topic_cache[key] = cleaned
+        logger.info(f"[TopicClean] {raw_topic!r} → {cleaned!r}")
+        return cleaned
+
+    except Exception as e:
+        logger.warning(f"[TopicClean] Gagal clean topic, pakai raw: {e}")
+        return raw_topic
 
 
 # ── Query builder ─────────────────────────────────────────────────────────────
@@ -96,8 +154,15 @@ def _build_search_query(
 def _filter_relevant_chunks(
     results: list,
     topic: Optional[str] = None,
+    cleaned_topic: Optional[str] = None,
     max_chunks: int = TOP_RELEVANT_CHUNKS,
 ) -> tuple:
+    """
+    Filter chunk dengan 3 strategi bertingkat.
+    Menerima cleaned_topic (sudah dinormalisasi) untuk keyword matching.
+    Fallback aman: jika tidak ada chunk yang lolos keyword check,
+    tetap gunakan gap-filtered results daripada return kosong.
+    """
     if not results:
         return [], False
 
@@ -121,14 +186,38 @@ def _filter_relevant_chunks(
             break
     after_gap = after_threshold[:gap_cut]
 
-    # Keyword check
-    if topic:
-        topic_words = [w.lower() for w in topic.split() if len(w) >= 3]
-        on_topic = [c for c in after_gap if any(w in c.get("text", "").lower() for w in topic_words)]
-        off_topic = [c for c in after_gap if c not in on_topic]
-        selected = on_topic[:max_chunks] if on_topic else after_gap[:max_chunks]
-        if on_topic and off_topic:
-            logger.info(f"[HybridRAG] Keyword filter '{topic}': kept {len(on_topic)}, removed {len(off_topic)}")
+    # Keyword check — gunakan cleaned_topic jika tersedia, fallback ke raw topic
+    effective_topic = cleaned_topic or topic
+    if effective_topic:
+        # Ekstrak kata >= 3 karakter dari KEDUA versi (raw + cleaned) untuk toleransi typo
+        raw_words     = [w.lower() for w in (topic or "").split() if len(w) >= 3]
+        cleaned_words = [w.lower() for w in effective_topic.split() if len(w) >= 3]
+        # Gabung semua kata unik dari raw dan cleaned
+        all_keywords  = list(set(raw_words + cleaned_words))
+
+        def _chunk_matches(chunk: dict) -> bool:
+            text = chunk.get("text", "").lower()
+            # Match jika ADA SATU SAJA kata dari keywords yang ditemukan di chunk
+            return any(kw in text for kw in all_keywords)
+
+        on_topic  = [c for c in after_gap if _chunk_matches(c)]
+        off_topic = [c for c in after_gap if not _chunk_matches(c)]
+
+        if on_topic:
+            if off_topic:
+                logger.info(
+                    f"[HybridRAG] Keyword filter '{effective_topic}': "
+                    f"kept {len(on_topic)}, removed {len(off_topic)} off-topic chunks"
+                )
+            selected = on_topic[:max_chunks]
+        else:
+            # Tidak ada yang match keyword — JANGAN buang semua, pakai gap results
+            # Ini terjadi saat topic sangat spesifik atau beda bahasa di chunk
+            logger.warning(
+                f"[HybridRAG] Keyword '{effective_topic}' tidak match di chunk manapun. "
+                f"Menggunakan gap-filtered results (score-based saja)."
+            )
+            selected = after_gap[:max_chunks]
     else:
         selected = after_gap[:max_chunks]
 
@@ -588,16 +677,21 @@ Format JSON:
 async def run_generate_material(request) -> dict:
     """
     Generate materi pembelajaran lengkap dari konten di Qdrant berdasarkan course_id.
-    Semua file dalam course tersebut digunakan — tidak perlu filter source_file.
-    Output ini yang akan disimpan di backend Laravel (MySQL) sebagai JSON.
+    Topic di-clean dulu (normalisasi typo/singkatan) sebelum dipakai sebagai query.
     """
     course_id = _normalize(getattr(request, "course_id", None))
-    topic = _normalize(getattr(request, "topic", None))
-    language = getattr(request, "language", "id")
-    scope = _scope_label(course_id, None)  # source_file selalu None untuk material
+    raw_topic = _normalize(getattr(request, "topic", None))
+    language  = getattr(request, "language", "id")
+    scope     = _scope_label(course_id, None)
 
-    query = _build_search_query(topic, "material", course_id, None)
-    logger.info(f"[Material] ▶ START | scope={scope} | topic={topic!r} | query={query!r}")
+    # Bersihkan topic dari typo/singkatan sebelum dipakai query & filter
+    cleaned_topic = await _clean_topic(raw_topic) if raw_topic else None
+
+    query = _build_search_query(cleaned_topic, "material", course_id, None)
+    logger.info(
+        f"[Material] ▶ START | scope={scope} | "
+        f"raw_topic={raw_topic!r} | cleaned_topic={cleaned_topic!r} | query={query!r}"
+    )
 
     # Step 1: Similarity Search
     raw_results = await _similarity_search(query, course_id, source_file=None, top_k=20)
@@ -607,21 +701,25 @@ async def run_generate_material(request) -> dict:
             "Pastikan file sudah di-upload dan diproses."
         )
 
-    # Step 2: Filter
-    results, has_relevant = _filter_relevant_chunks(raw_results, topic=topic, max_chunks=TOP_RELEVANT_CHUNKS)
+    # Step 2: Filter — kirim cleaned_topic untuk keyword matching yang akurat
+    results, has_relevant = _filter_relevant_chunks(
+        raw_results,
+        topic=raw_topic,
+        cleaned_topic=cleaned_topic,
+        max_chunks=TOP_RELEVANT_CHUNKS,
+    )
     relevant_context = _format_chunks(results)
 
-    # Step 3: Global Summary (pakai course_id saja)
+    # Step 3: Global Summary
     global_summary = await _build_global_summary(course_id, None, language, len(raw_results))
 
-    # Step 4: Prompt & Generate — naikkan max_tokens agar output panjang tidak terpotong
-    prompt = _build_material_prompt(topic, language, global_summary, relevant_context, has_relevant)
+    # Step 4: Prompt & Generate — gunakan cleaned_topic agar prompt lebih akurat
+    prompt = _build_material_prompt(cleaned_topic or raw_topic, language, global_summary, relevant_context, has_relevant)
     raw_output = await _generate_with_gemini(prompt, max_tokens=8192)
 
     # Step 5: Parse
-    parsed = _parse_json(raw_output)
-    ctx_count = len(results)
-
+    parsed     = _parse_json(raw_output)
+    ctx_count  = len(results)
     sections   = parsed.get("sections", [])
     key_points = parsed.get("key_points", [])
     logger.info(
@@ -649,24 +747,34 @@ async def run_generate_material(request) -> dict:
 async def run_generate_flashcard(request) -> dict:
     """
     Generate flashcard dari konten Qdrant.
-    Opsional: material_context dari Laravel untuk hasil lebih akurat.
+    Topic di-clean dulu (normalisasi typo/singkatan) sebelum dipakai sebagai query.
     """
-    course_id = _normalize(getattr(request, "course_id", None))
-    source_file = _normalize(getattr(request, "source_file", None))
-    topic = _normalize(getattr(request, "topic", None))
+    course_id        = _normalize(getattr(request, "course_id", None))
+    source_file      = _normalize(getattr(request, "source_file", None))
+    raw_topic        = _normalize(getattr(request, "topic", None))
     material_context = _normalize(getattr(request, "material_context", None))
-    count = getattr(request, "count", 10)
-    language = getattr(request, "language", "id")
-    scope = _scope_label(course_id, source_file)
+    count            = getattr(request, "count", 10)
+    language         = getattr(request, "language", "id")
+    scope            = _scope_label(course_id, source_file)
 
-    query = _build_search_query(topic, "flashcard", course_id, source_file)
-    logger.info(f"[Flashcard] ▶ START | scope={scope} | topic={topic!r} | count={count}")
+    cleaned_topic = await _clean_topic(raw_topic) if raw_topic else None
+
+    query = _build_search_query(cleaned_topic, "flashcard", course_id, source_file)
+    logger.info(
+        f"[Flashcard] ▶ START | scope={scope} | "
+        f"raw_topic={raw_topic!r} | cleaned_topic={cleaned_topic!r} | count={count}"
+    )
 
     raw_results = await _similarity_search(query, course_id, source_file, top_k=20)
     if not raw_results:
         raise RuntimeError(f"Tidak ada data di Qdrant untuk scope '{scope}'.")
 
-    results, has_relevant = _filter_relevant_chunks(raw_results, topic=topic, max_chunks=TOP_RELEVANT_CHUNKS)
+    results, has_relevant = _filter_relevant_chunks(
+        raw_results,
+        topic=raw_topic,
+        cleaned_topic=cleaned_topic,
+        max_chunks=TOP_RELEVANT_CHUNKS,
+    )
     relevant_context = _format_chunks(results)
 
     global_summary = ""
@@ -674,7 +782,8 @@ async def run_generate_flashcard(request) -> dict:
         global_summary = await _build_global_summary(course_id, source_file, language, len(raw_results))
 
     prompt = _build_flashcard_prompt(
-        topic, count, language, global_summary, relevant_context, has_relevant, material_context
+        cleaned_topic or raw_topic, count, language,
+        global_summary, relevant_context, has_relevant, material_context
     )
     raw_output = await _generate_with_gemini(prompt, max_tokens=4096)
     parsed = _parse_json(raw_output)
@@ -692,29 +801,37 @@ async def run_generate_flashcard(request) -> dict:
 
 async def run_generate_quiz(request) -> dict:
     """
-    Generate quiz dengan tipe soal dinamis:
-      - essay
-      - multiple_choice_single
-      - multiple_choice_multiple
+    Generate quiz dengan tipe soal dinamis.
+    Topic di-clean dulu (normalisasi typo/singkatan) sebelum dipakai sebagai query.
     """
-    course_id = _normalize(getattr(request, "course_id", None))
-    source_file = _normalize(getattr(request, "source_file", None))
-    topic = _normalize(getattr(request, "topic", None))
+    course_id        = _normalize(getattr(request, "course_id", None))
+    source_file      = _normalize(getattr(request, "source_file", None))
+    raw_topic        = _normalize(getattr(request, "topic", None))
     material_context = _normalize(getattr(request, "material_context", None))
-    quiz_type = getattr(request, "quiz_type", "multiple_choice_single")
-    count = getattr(request, "count", 5)
-    difficulty = getattr(request, "difficulty", "medium")
-    language = getattr(request, "language", "id")
-    scope = _scope_label(course_id, source_file)
+    quiz_type        = getattr(request, "quiz_type", "multiple_choice_single")
+    count            = getattr(request, "count", 5)
+    difficulty       = getattr(request, "difficulty", "medium")
+    language         = getattr(request, "language", "id")
+    scope            = _scope_label(course_id, source_file)
 
-    query = _build_search_query(topic, "quiz", course_id, source_file, quiz_type)
-    logger.info(f"[Quiz] ▶ START | scope={scope} | type={quiz_type} | topic={topic!r} | count={count}")
+    cleaned_topic = await _clean_topic(raw_topic) if raw_topic else None
+
+    query = _build_search_query(cleaned_topic, "quiz", course_id, source_file, quiz_type)
+    logger.info(
+        f"[Quiz] ▶ START | scope={scope} | type={quiz_type} | "
+        f"raw_topic={raw_topic!r} | cleaned_topic={cleaned_topic!r} | count={count}"
+    )
 
     raw_results = await _similarity_search(query, course_id, source_file, top_k=20)
     if not raw_results:
         raise RuntimeError(f"Tidak ada data di Qdrant untuk scope '{scope}'.")
 
-    results, has_relevant = _filter_relevant_chunks(raw_results, topic=topic, max_chunks=TOP_RELEVANT_CHUNKS)
+    results, has_relevant = _filter_relevant_chunks(
+        raw_results,
+        topic=raw_topic,
+        cleaned_topic=cleaned_topic,
+        max_chunks=TOP_RELEVANT_CHUNKS,
+    )
     relevant_context = _format_chunks(results)
 
     global_summary = ""
@@ -722,7 +839,7 @@ async def run_generate_quiz(request) -> dict:
         global_summary = await _build_global_summary(course_id, source_file, language, len(raw_results))
 
     prompt = _build_quiz_prompt(
-        topic, quiz_type, count, difficulty, language,
+        cleaned_topic or raw_topic, quiz_type, count, difficulty, language,
         global_summary, relevant_context, has_relevant, material_context
     )
     raw_output = await _generate_with_gemini(prompt, max_tokens=4096)
