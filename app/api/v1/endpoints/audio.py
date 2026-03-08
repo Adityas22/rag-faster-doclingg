@@ -161,17 +161,12 @@ async def transcribe_audio(
 
 @router.post(
     "/record",
-    summary="Upload Rekaman Browser → Simpan ke Qdrant (Async)",
+    summary="Upload Rekaman Audio → Simpan ke Qdrant (Async)",
     description=f"""
-Endpoint untuk rekaman langsung dari browser (MediaRecorder API).
-Sama dengan `/transcribe` tapi mendukung format `.webm` `.mp4` `.3gp`.
+Endpoint untuk upload file rekaman audio.
+Mendukung format `.mp3` dan `.aac` selain format audio standar lainnya.
 
-**Browser output:**
-| Browser | Format | ~3 menit |
-|---------|--------|----------|
-| Chrome  | webm/opus | ~1-2MB ✅ |
-| Firefox | ogg/opus  | ~1-2MB ✅ |
-| Safari  | mp4/aac   | ~3-5MB ✅ |
+**Format yang didukung:** `.mp3` `.aac` `.wav` `.m4a` `.ogg` `.flac`
     """,
 )
 async def record_audio(
@@ -179,10 +174,10 @@ async def record_audio(
     language: str = Query(default="auto", description="Bahasa: 'auto', 'id', 'en'"),
     course_id: str = Query(..., description="ID course dari Laravel (wajib)"),
 ):
-    extra = {".webm", ".mp4", ".3gp"}
+    extra = {".mp3", ".aac"}
     ext = _validate_audio_file(file, extra_ext=extra)
     if not ext:
-        file.filename = f"recording_{uuid.uuid4().hex[:8]}.webm"
+        file.filename = f"recording_{uuid.uuid4().hex[:8]}.mp3"
     size_mb = _check_size(file)
     task_id = str(uuid.uuid4())
     temp_path = _save_temp(file, task_id)

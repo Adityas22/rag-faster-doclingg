@@ -282,7 +282,7 @@ def _build_material_prompt(
         f'🎯 TOPIK: Buat materi HANYA tentang {topic_label}.\n'
         f'   LARANG membahas topik lain meskipun ada dalam konteks.'
         if topic else
-        "Buat materi dari SELURUH konten yang tersedia."
+        "Buat materi dari SELURUH konten yang tersedia secara komprehensif."
     )
     source_rule = (
         "⚠️ ATURAN: Gunakan HANYA informasi dari KONTEKS RELEVAN di bawah."
@@ -290,7 +290,7 @@ def _build_material_prompt(
         "Gunakan KONTEKS GLOBAL sebagai referensi utama."
     )
 
-    return f"""Kamu adalah asisten AI yang membuat materi pembelajaran dari konten yang diberikan.
+    return f"""Kamu adalah penulis modul pembelajaran profesional yang membuat materi ajar LENGKAP dan DETAIL.
 
 === KONTEKS GLOBAL ===
 {global_summary or "Tidak tersedia."}
@@ -298,35 +298,146 @@ def _build_material_prompt(
 === KONTEKS RELEVAN (SUMBER UTAMA) ===
 {relevant_context}
 
-=== INSTRUKSI ===
+=== INSTRUKSI WAJIB ===
 {topic_constraint}
 {source_rule}
 - Jawab dalam {output_lang}
 - Output HANYA JSON valid, TANPA teks tambahan, TANPA markdown
+- WAJIB menghasilkan konten yang PANJANG, DETAIL, dan KAYA informasi
+- Setiap section MINIMAL 5-8 kalimat penjabaran penuh
+- Jangan buat poin-poin singkat — tulis dalam paragraf yang mengalir
+- introduction MINIMAL 4-5 kalimat
+- content MINIMAL 8-10 paragraf panjang yang menggabungkan semua section
+- key_points BERISI 5-8 poin SINGKAT seperti butir abstrak: maks 10 kata per poin, padat, langsung ke inti — BUKAN kalimat panjang atau paragraf
+- summary MINIMAL 4-5 kalimat penutup yang komprehensif
+- learning_objectives MINIMAL 5 tujuan pembelajaran yang terukur
+- prerequisites MINIMAL 3 prasyarat pengetahuan
+- real_world_applications MINIMAL 4 contoh penerapan nyata yang detail
+- common_mistakes MINIMAL 4 kesalahan umum beserta penjelasan cara mengatasinya
+- further_reading MINIMAL 3 saran pengembangan materi
 
-Tugas: Buatkan materi pembelajaran lengkap tentang {topic_label} dari KONTEKS RELEVAN.
+Tugas: Buatkan modul pembelajaran LENGKAP dan KOMPREHENSIF tentang {topic_label}.
+Bayangkan ini adalah bab dalam buku teks — setiap bagian harus tuntas dan mendalam.
 
-Format JSON:
+Format JSON (SEMUA field WAJIB diisi dengan konten PANJANG dan DETAIL):
 {{
-  "title": "Judul materi yang spesifik",
-  "introduction": "Paragraf pembuka (2-3 kalimat) yang menjelaskan gambaran umum topik",
+  "title": "Judul materi yang spesifik dan deskriptif",
+
+  "introduction": "Paragraf pembuka PANJANG (minimal 4-5 kalimat) yang menjelaskan: (1) apa topik ini, (2) mengapa penting dipelajari, (3) konteks dalam bidang ilmu yang lebih luas, (4) apa yang akan dipelajari dalam materi ini, (5) manfaat nyata setelah mempelajari topik ini.",
+
+  "learning_objectives": [
+    "Setelah mempelajari materi ini, peserta didik mampu menjelaskan konsep X secara lengkap",
+    "Peserta didik mampu mengidentifikasi komponen-komponen utama dari Y",
+    "Peserta didik mampu membedakan antara A dan B berdasarkan karakteristiknya",
+    "Peserta didik mampu menerapkan prinsip Z dalam konteks nyata",
+    "Peserta didik mampu menganalisis permasalahan terkait topik ini"
+  ],
+
+  "prerequisites": [
+    "Pemahaman dasar tentang konsep X sebelum mempelajari materi ini",
+    "Pengetahuan mengenai Y sebagai fondasi untuk memahami topik",
+    "Kemampuan dasar dalam Z yang dibutuhkan untuk mengikuti materi"
+  ],
+
   "sections": [
     {{
-      "heading": "Sub-topik 1",
-      "body": "Penjelasan detail sub-topik 1 (minimal 3-5 kalimat dari konteks)"
+      "heading": "1. Pengertian dan Definisi [Nama Topik]",
+      "body": "Penjelasan PANJANG dan DETAIL (minimal 5-8 kalimat penuh). Jelaskan definisi lengkap dari berbagai sudut pandang, asal-usul konsep, bagaimana para ahli mendefinisikannya, dan apa yang membuat konsep ini unik. Sertakan detail spesifik dari konteks yang tersedia. Jangan hanya satu atau dua kalimat — kembangkan setiap poin menjadi paragraf yang bermakna dan informatif bagi pembaca.",
+      "key_concept": "Konsep inti yang harus dipahami dari section ini"
     }},
     {{
-      "heading": "Sub-topik 2",
-      "body": "Penjelasan detail sub-topik 2"
+      "heading": "2. Sejarah dan Perkembangan",
+      "body": "Penjelasan panjang tentang latar belakang historis, bagaimana konsep ini berkembang dari waktu ke waktu, siapa tokoh-tokoh penting yang berkontribusi, dan bagaimana pemahaman tentang topik ini berevolusi hingga saat ini.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "3. Komponen dan Elemen Utama",
+      "body": "Uraian mendalam tentang bagian-bagian penyusun, elemen-elemen kunci, dan karakteristik utama dari topik ini. Jelaskan setiap komponen secara terpisah namun tunjukkan bagaimana mereka saling berkaitan dan membentuk satu kesatuan yang utuh.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "4. Prinsip dan Mekanisme Kerja",
+      "body": "Penjelasan rinci tentang bagaimana topik ini bekerja, prinsip-prinsip yang mendasarinya, mekanisme atau proses yang terlibat, dan apa yang terjadi secara sistematis. Gunakan analogi atau perumpamaan jika membantu pemahaman.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "5. Jenis, Klasifikasi, dan Variasi",
+      "body": "Penjelasan tentang berbagai jenis, tipe, atau klasifikasi yang ada dalam topik ini. Uraikan perbedaan dan persamaan antara masing-masing jenis, kapan masing-masing digunakan, dan apa kelebihan serta kekurangannya.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "6. Penerapan dan Implementasi Praktis",
+      "body": "Bagaimana topik ini diterapkan dalam kehidupan nyata atau dalam praktik profesional. Berikan contoh-contoh konkret, langkah-langkah implementasi, dan skenario penggunaan yang umum dijumpai. Jelaskan juga tantangan yang sering dihadapi dalam penerapannya.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "7. Kelebihan, Keterbatasan, dan Pertimbangan",
+      "body": "Analisis mendalam tentang kelebihan dan manfaat dari topik ini, keterbatasan atau kekurangan yang perlu diperhatikan, serta faktor-faktor yang perlu dipertimbangkan dalam penggunaannya. Berikan perspektif yang seimbang dan objektif.",
+      "key_concept": "Konsep inti section ini"
+    }},
+    {{
+      "heading": "8. Hubungan dengan Konsep Lain",
+      "body": "Jelaskan bagaimana topik ini berkaitan dengan konsep-konsep lain dalam bidang yang sama, bagaimana ia mempengaruhi atau dipengaruhi oleh faktor-faktor lain, serta posisinya dalam kerangka ilmu yang lebih besar.",
+      "key_concept": "Konsep inti section ini"
     }}
   ],
-  "content": "Isi materi lengkap dalam satu blok teks panjang (gabungan semua sections)",
+
+  "content": "INI ADALAH FIELD TERPENTING — tulis isi materi LENGKAP dalam satu blok teks panjang yang mengalir seperti bab buku teks. MINIMAL 10-15 paragraf. Gabungkan semua section di atas menjadi narasi yang kohesif dan komprehensif. Mulai dari pengenalan, bahas setiap aspek secara mendalam, berikan contoh-contoh spesifik, jelaskan mekanisme dan prinsip kerja, uraikan berbagai jenis dan klasifikasi, dan tutup dengan implikasi praktis. Setiap paragraf harus berisi minimal 4-6 kalimat yang substantif. Jangan gunakan bullet point — tulis dalam paragraf prosa yang mengalir dan enak dibaca.",
+
   "key_points": [
-    "Poin penting 1 dari materi",
-    "Poin penting 2 dari materi",
-    "Poin penting 3 dari materi"
+    "Kalimat pendek 1 — satu fakta/konsep inti, maks 10 kata",
+    "Kalimat pendek 2 — satu fakta/konsep inti, maks 10 kata",
+    "Kalimat pendek 3 — satu fakta/konsep inti, maks 10 kata",
+    "Kalimat pendek 4 — satu fakta/konsep inti, maks 10 kata",
+    "Kalimat pendek 5 — satu fakta/konsep inti, maks 10 kata"
   ],
-  "summary": "Kesimpulan singkat (2-3 kalimat) tentang topik ini"
+
+  "real_world_applications": [
+    {{
+      "context": "Nama bidang atau konteks penerapan pertama",
+      "description": "Penjelasan detail (3-4 kalimat) tentang bagaimana topik ini diterapkan dalam konteks ini, apa manfaatnya, dan contoh konkret yang bisa dijumpai"
+    }},
+    {{
+      "context": "Nama bidang atau konteks penerapan kedua",
+      "description": "Penjelasan detail tentang penerapan di bidang ini beserta contoh nyata"
+    }},
+    {{
+      "context": "Nama bidang atau konteks penerapan ketiga",
+      "description": "Penjelasan detail tentang penerapan di bidang ini beserta contoh nyata"
+    }},
+    {{
+      "context": "Nama bidang atau konteks penerapan keempat",
+      "description": "Penjelasan detail tentang penerapan di bidang ini beserta contoh nyata"
+    }}
+  ],
+
+  "common_mistakes": [
+    {{
+      "mistake": "Deskripsi kesalahan umum pertama yang sering dilakukan",
+      "explanation": "Penjelasan mengapa ini salah dan bagaimana cara menghindari atau memperbaikinya (2-3 kalimat)"
+    }},
+    {{
+      "mistake": "Deskripsi kesalahan umum kedua",
+      "explanation": "Penjelasan dan cara mengatasinya"
+    }},
+    {{
+      "mistake": "Deskripsi kesalahan umum ketiga",
+      "explanation": "Penjelasan dan cara mengatasinya"
+    }},
+    {{
+      "mistake": "Deskripsi kesalahan umum keempat",
+      "explanation": "Penjelasan dan cara mengatasinya"
+    }}
+  ],
+
+  "summary": "Paragraf penutup PANJANG (minimal 4-5 kalimat) yang merangkum: (1) inti dari seluruh materi yang telah dibahas, (2) mengapa topik ini penting, (3) apa poin-poin kunci yang harus diingat, (4) bagaimana pengetahuan ini dapat diterapkan, (5) langkah selanjutnya yang bisa dilakukan untuk memperdalam pemahaman.",
+
+  "further_reading": [
+    "Topik lanjutan pertama yang disarankan untuk dipelajari berikutnya beserta alasannya",
+    "Topik lanjutan kedua yang berkaitan erat dengan materi ini",
+    "Konsep yang perlu dipelajari untuk pemahaman lebih mendalam",
+    "Aspek praktis atau teknis yang bisa dijelajahi lebih lanjut"
+  ]
 }}"""
 
 
@@ -503,27 +614,35 @@ async def run_generate_material(request) -> dict:
     # Step 3: Global Summary (pakai course_id saja)
     global_summary = await _build_global_summary(course_id, None, language, len(raw_results))
 
-    # Step 4: Prompt & Generate
+    # Step 4: Prompt & Generate — naikkan max_tokens agar output panjang tidak terpotong
     prompt = _build_material_prompt(topic, language, global_summary, relevant_context, has_relevant)
-    raw_output = await _generate_with_gemini(prompt, max_tokens=4096)
+    raw_output = await _generate_with_gemini(prompt, max_tokens=8192)
 
     # Step 5: Parse
     parsed = _parse_json(raw_output)
     ctx_count = len(results)
 
-    sections = parsed.get("sections", [])
+    sections   = parsed.get("sections", [])
     key_points = parsed.get("key_points", [])
-    logger.info(f"[Material] ✅ DONE | scope={scope} | sections={len(sections)} | key_points={len(key_points)}")
+    logger.info(
+        f"[Material] ✅ DONE | scope={scope} | sections={len(sections)} "
+        f"| key_points={len(key_points)} | content_len={len(parsed.get('content', ''))}"
+    )
 
     return {
-        "title": parsed.get("title", ""),
-        "introduction": parsed.get("introduction", ""),
-        "sections": sections,
-        "content": parsed.get("content", ""),
-        "key_points": key_points,
-        "summary": parsed.get("summary", ""),
-        "context_chunks_used": ctx_count,
-        "context_scope": scope,
+        "title":                   parsed.get("title", ""),
+        "introduction":            parsed.get("introduction", ""),
+        "learning_objectives":     parsed.get("learning_objectives", []),
+        "prerequisites":           parsed.get("prerequisites", []),
+        "sections":                sections,
+        "content":                 parsed.get("content", ""),
+        "key_points":              key_points,
+        "real_world_applications": parsed.get("real_world_applications", []),
+        "common_mistakes":         parsed.get("common_mistakes", []),
+        "summary":                 parsed.get("summary", ""),
+        "further_reading":         parsed.get("further_reading", []),
+        "context_chunks_used":     ctx_count,
+        "context_scope":           scope,
     }
 
 
